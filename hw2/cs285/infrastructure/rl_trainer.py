@@ -45,11 +45,7 @@ class RL_Trainer(object):
         #############
 
         # Make the gym environment
-        if self.params['video_log_freq'] == -1:
-            render_mode = None
-        else:
-            render_mode = 'rgb_array'
-        self.env = gym.make(self.params['env_name'], render_mode=render_mode)
+        self.env = gym.make(self.params['env_name'])
         self.env.seed(seed)
 
         # Add noise wrapper
@@ -90,6 +86,10 @@ class RL_Trainer(object):
         else:
             self.fps = 10
 
+        # EDIT 05/02 19h32 -> 07/02 15h15 : For the bonus
+        self.params['agent_params']['mlp_iter'] = self.params['mlp_iter']
+
+
 
         #############
         ## AGENT
@@ -123,7 +123,7 @@ class RL_Trainer(object):
                 self.logvideo = True
             else:
                 self.logvideo = False
-
+                
             # decide if metrics should be logged
             if self.params['scalar_log_freq'] == -1:
                 self.logmetrics = False
@@ -157,11 +157,77 @@ class RL_Trainer(object):
     ####################################
     ####################################
 
-    def collect_training_trajectories(self, itr, load_initial_expertdata, collect_policy, batch_size):
-        # TODO: GETTHIS from HW1
+    def collect_training_trajectories(
+            self,
+            itr,
+            load_initial_expertdata,
+            collect_policy,
+            batch_size,
+    ):
+        """
+        :param itr:
+        :param load_initial_expertdata:  path to expert data pkl file
+        :param collect_policy:  the current policy using which we collect data
+        :param batch_size:  the number of transitions we collect
+        :return:
+            paths: a list trajectories
+            envsteps_this_batch: the sum over the numbers of environment steps in paths
+            train_video_paths: paths which also contain videos for visualization purposes
+        """
+
+        # TODO decide whether to load training data or use the current policy to collect more data
+        # HINT: depending on if it's the first iteration or not, decide whether to either
+                # (1) load the data. In this case you can directly return as follows
+                # ``` return loaded_paths, 0, None ```
+
+                # (2) collect `self.params['batch_size']` transitions
+
+        if itr == 0 and load_initial_expertdata is not None:
+            with open(load_initial_expertdata, 'rb') as paths_file:
+                
+                loaded_paths = pickle.load(paths_file)
+            return loaded_paths, 0, None
+
+        # TODO collect `batch_size` samples to be used for training
+        # HINT1: use sample_trajectories from utils
+        # HINT2: you want each of these collected rollouts to be of length self.params['ep_len']
+        print("\nCollecting data to be used for training...")
+        paths, envsteps_this_batch = utils.sample_trajectories(
+                self.env,
+                collect_policy,
+                batch_size,
+                self.params['ep_len'],
+            )
+        
+
+        # collect more rollouts with the same policy, to be saved as videos in tensorboard
+        # note: here, we collect MAX_NVIDEO rollouts, each of length MAX_VIDEO_LEN
+        train_video_paths = None
+        if self.logvideo:
+            print('\nCollecting train rollouts to be used for saving videos...')
+            ## TODO look in utils and implement sample_n_trajectories
+            train_video_paths = utils.sample_n_trajectories(self.env, collect_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
+
+        return paths, envsteps_this_batch, train_video_paths
+
 
     def train_agent(self):
-        # TODO: GETTHIS from HW1
+      
+        print('\nTraining agent using sampled data from replay buffer...')
+        all_logs = []
+        for train_step in range(self.params['num_agent_train_steps_per_iter']):
+
+            # TODO sample some data from the data buffer
+            # HINT1: use the agent's sample function
+            # HINT2: how much data = self.params['train_batch_size']
+            ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch = self.agent.sample(self.params['train_batch_size'])
+
+            # TODO use the sampled data to train an agent
+            # HINT: use the agent's train function
+            # HINT: keep the agent's training log for debugging
+            train_log = self.agent.train(ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch)
+            all_logs.append(train_log)
+        return all_logs
 
     ####################################
     ####################################

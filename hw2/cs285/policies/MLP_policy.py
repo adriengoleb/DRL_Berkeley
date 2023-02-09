@@ -10,6 +10,7 @@ from torch import distributions
 
 from cs285.infrastructure import pytorch_util as ptu
 from cs285.policies.base_policy import BasePolicy
+from cs285.infrastructure import utils
 
 
 class MLPPolicy(BasePolicy, nn.Module, metaclass=abc.ABCMeta):
@@ -23,6 +24,7 @@ class MLPPolicy(BasePolicy, nn.Module, metaclass=abc.ABCMeta):
                  learning_rate=1e-4,
                  training=True,
                  nn_baseline=False,
+                 iter_per_batch=1,
                  **kwargs
                  ):
         super().__init__(**kwargs)
@@ -36,6 +38,7 @@ class MLPPolicy(BasePolicy, nn.Module, metaclass=abc.ABCMeta):
         self.learning_rate = learning_rate
         self.training = training
         self.nn_baseline = nn_baseline
+        self.iter_per_batch = iter_per_batch
 
         if self.discrete:
             self.logits_na = ptu.build_mlp(input_size=self.ob_dim,
@@ -86,8 +89,19 @@ class MLPPolicy(BasePolicy, nn.Module, metaclass=abc.ABCMeta):
 
     # query the policy with observation(s) to get selected action(s)
     def get_action(self, obs: np.ndarray) -> np.ndarray:
-        # TODO: get this from HW1
+        if len(obs.shape) > 1:
+            observation = obs
+        else:
+            observation = obs[None]
 
+        # TODO return the action that the policy prescribes
+        #raise NotImplementedError
+        
+        observation = ptu.from_numpy(observation.astype(np.float32))
+        action_distribution = self(observation)
+        action = action_distribution.sample()
+        return  ptu.to_numpy(action)
+        
     # update/train this policy
     def update(self, observations, actions, **kwargs):
         raise NotImplementedError
@@ -127,24 +141,53 @@ class MLPPolicyPG(MLPPolicy):
         actions = ptu.from_numpy(actions)
         advantages = ptu.from_numpy(advantages)
 
-        # TODO: update the policy using policy gradient
-        # HINT1: Recall that the expression that we want to MAXIMIZE
-            # is the expectation over collected trajectories of:
-            # sum_{t=0}^{T-1} [grad [log pi(a_t|s_t) * (Q_t - b_t)]]
-        # HINT2: you will want to use the `log_prob` method on the distribution returned
-            # by the `forward` method
+        for i in range(self.iter_per_batch):
+            # TODO: update the policy using policy gradient
+            # HINT1: Recall that the expression that we want to MAXIMIZE
+                # is the expectation over collected trajectories of:
+                # sum_{t=0}^{T-1} [grad [log pi(a_t|s_t) * (Q_t - b_t)]]
+            # HINT2: you will want to use the `log_prob` method on the distribution returned
+                # by the `forward` method
+            # HINT3: don't forget that `optimizer.step()` MINIMIZES a loss
+            # HINT4: use self.optimizer to optimize the loss. Remember to
+                # 'zero_grad' first
 
-        TODO
+            self.optimizer.zero_grad()
+            action_distribution = self(observations)
+
+            loss = - (action_distribution.log_prob(actions) * advantages).sum()
+            loss.backward()
+
+            self.optimizer.step()
+
+
+
+        
+
+
 
         if self.nn_baseline:
             ## TODO: update the neural network baseline using the q_values as
             ## targets. The q_values should first be normalized to have a mean
             ## of zero and a standard deviation of one.
 
-            ## Note: You will need to convert the targets into a tensor using
+            ## HINT1: use self.baseline_optimizer to optimize the loss used for
+                ## updating the baseline. Remember to 'zero_grad' first
+            ## HINT2: You will need to convert the targets into a tensor using
                 ## ptu.from_numpy before using it in the loss
 
-            TODO
+            targets = utils.normalize(q_values, q_values.mean(), q_values.std())
+            targets = ptu.from_numpy(targets)
+
+            baseline_predictions = self.baseline(observations).squeeze(1)
+            
+            assert baseline_predictions.shape == targets.shape
+
+            baseline_loss = F.mse_loss(baseline_predictions, targets)
+
+            self.baseline_optimizer.zero_grad()
+            baseline_loss.backward()
+            self.baseline_optimizer.step()
 
         train_log = {
             'Training Loss': ptu.to_numpy(loss),
@@ -156,10 +199,8 @@ class MLPPolicyPG(MLPPolicy):
             Helper function that converts `observations` to a tensor,
             calls the forward method of the baseline MLP,
             and returns a np array
-
             Input: `observations`: np.ndarray of size [N, 1]
             Output: np.ndarray of size [N]
-
         """
         observations = ptu.from_numpy(observations)
         pred = self.baseline(observations)

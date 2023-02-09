@@ -26,7 +26,9 @@ class PGAgent(BaseAgent):
             self.agent_params['size'],
             discrete=self.agent_params['discrete'],
             learning_rate=self.agent_params['learning_rate'],
-            nn_baseline=self.agent_params['nn_baseline']
+            nn_baseline=self.agent_params['nn_baseline'],
+            # EDIT 05/02 19H30
+            iter_per_batch=self.agent_params['mlp_iter']
         )
 
         # replay buffer
@@ -39,10 +41,16 @@ class PGAgent(BaseAgent):
             and the calculated qvals/advantages that come from the seen rewards.
         """
 
-        # TODO: update the PG actor/policy using the given batch of data 
-        # using helper functions to compute qvals and advantages, and
+        # TODO: update the PG actor/policy using the given batch of data, and
         # return the train_log obtained from updating the policy
 
+        # HINT1: use helper functions to compute qvals and advantages
+        # HINT2: look at the MLPPolicyPG class for how to update the policy
+            # and obtain a train_log
+          
+        q_values = self.calculate_q_vals(rewards_list)
+        advantages = self.estimate_advantage(observations, rewards_list, q_values, terminals)
+        train_log = self.actor.update(observations, actions, advantages, q_values)
         return train_log
 
     def calculate_q_vals(self, rewards_list):
@@ -55,30 +63,32 @@ class PGAgent(BaseAgent):
             # either the full trajectory-based estimator or the reward-to-go
             # estimator
 
-        # Note: rewards_list is a list of lists of rewards with the inner list
-        # being the list of rewards for a single trajectory.
-        
-        # HINT: use the helper functions self._discounted_return and
-        # self._discounted_cumsum (you will need to implement these).
+        # HINT1: rewards_list is a list of lists of rewards. Each inner list
+            # is a list of rewards for a single trajectory.
+        # HINT2: use the helper functions self._discounted_return and
+            # self._discounted_cumsum (you will need to implement these). These
+            # functions should only take in a single list for a single trajectory.
 
         # Case 1: trajectory-based PG
         # Estimate Q^{pi}(s_t, a_t) by the total discounted reward summed over entire trajectory
-
-        # Note: q_values should first be a 2D list where the first dimension corresponds to 
-        # trajectories and the second corresponds to timesteps, 
-        # then flattened to a 1D numpy array.
+        # HINT3: q_values should be a 1D numpy array where the indices correspond to the same
+        # ordering as observations, actions, etc.
 
         if not self.reward_to_go:
-            TODO
-
+            values = []
+            for reward in rewards_list:
+                values.append(self._discounted_return(reward))
+            q_values = np.concatenate(values)
         # Case 2: reward-to-go PG
         # Estimate Q^{pi}(s_t, a_t) by the discounted sum of rewards starting from t
         else:
-            TODO
-
+            values = []
+            for reward in rewards_list:
+                values.append(self._discounted_cumsum(reward))
+            q_values = np.concatenate(values)
         return q_values
 
-    def estimate_advantage(self, obs: np.ndarray, rews_list: np.ndarray, q_values: np.ndarray, terminals: np.ndarray):
+    def estimate_advantage(self, obs, rews_list, q_values, terminals):
 
         """
             Computes advantages by (possibly) using GAE, or subtracting a baseline from the estimated Q values
@@ -94,8 +104,7 @@ class PGAgent(BaseAgent):
             ## TODO: values were trained with standardized q_values, so ensure
                 ## that the predictions have the same mean and standard deviation as
                 ## the current batch of q_values
-            values = TODO
-
+            values = (values_unnormalized * np.std(q_values)) + np.mean(q_values)
             if self.gae_lambda is not None:
                 ## append a dummy T+1 value for simpler recursive calculation
                 values = np.append(values, [0])
@@ -111,26 +120,32 @@ class PGAgent(BaseAgent):
                 for i in reversed(range(batch_size)):
                     ## TODO: recursively compute advantage estimates starting from
                         ## timestep T.
-                    ## HINT: use terminals to handle edge cases. terminals[i]
+                    ## HINT 1: use terminals to handle edge cases. terminals[i]
                         ## is 1 if the state is the last in its trajectory, and
                         ## 0 otherwise.
-
+                    ## HINT 2: self.gae_lambda is the lambda value in the
+                        ## GAE formula
+                    if terminals[i]:
+                        delta = rews[i] - values[i]
+                    else: 
+                        delta = rews[i] + (self.gamma * values[i+1]) - values[i]
+                    advantages[i] = delta + self.gamma * self.gae_lambda * advantages[i+1]
                 # remove dummy advantage
                 advantages = advantages[:-1]
 
             else:
                 ## TODO: compute advantage estimates using q_values, and values as baselines
-                advantages = TODO
-
+                advantages = q_values - values
         # Else, just set the advantage to [Q]
         else:
             advantages = q_values.copy()
-
-        # Normalize the resulting advantages to have a mean of zero
-        # and a standard deviation of one
+        
+        # Normalize the resulting advantages
         if self.standardize_advantages:
-            advantages = TODO
-
+            ## TODO: standardize the advantages to have a mean of zero
+            ## and a standard deviation of one
+            advantages = (advantages  - np.mean(advantages)) / np.std(advantages)
+        
         return advantages
 
     #####################################################
@@ -149,11 +164,16 @@ class PGAgent(BaseAgent):
     def _discounted_return(self, rewards):
         """
             Helper function
-
             Input: list of rewards {r_0, r_1, ..., r_t', ... r_T} from a single rollout of length T
-
             Output: list where each index t contains sum_{t'=0}^T gamma^t' r_{t'}
         """
+
+        # TODO: create list_of_discounted_returns
+        t_prime = np.arange(len(rewards))
+        gammas = np.power(self.gamma, t_prime)
+
+        discounted_return = gammas * rewards
+        list_of_discounted_returns = np.ones_like(rewards) * np.sum(discounted_return)
 
         return list_of_discounted_returns
 
@@ -164,4 +184,19 @@ class PGAgent(BaseAgent):
             -and returns a list where the entry in each index t' is sum_{t'=t}^T gamma^(t'-t) * r_{t'}
         """
 
+        # TODO: create `list_of_discounted_returns`
+        # HINT: it is possible to write a vectorized solution, but a solution
+            # using a for loop is also fine
+          
+        all_discounted_cumsums = []
+
+        # for loop over steps (t) of the given rollout
+        for t in range(len(rewards)):
+            t_prime = np.arange(t, len(rewards))
+            discounts = np.power(self.gamma, t_prime - t)
+            discounted_cumsum = discounts * rewards[t:]
+            sum_discounted_cumsum = np.sum(discounted_cumsum)
+            all_discounted_cumsums.append(sum_discounted_cumsum)
+
+        list_of_discounted_cumsums = np.array(all_discounted_cumsums)
         return list_of_discounted_cumsums

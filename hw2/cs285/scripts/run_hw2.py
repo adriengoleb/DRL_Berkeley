@@ -16,6 +16,7 @@ class PG_Trainer(object):
             'n_layers': params['n_layers'],
             'size': params['size'],
             'learning_rate': params['learning_rate'],
+		'mlp_iter' : params['mlp_iter'],
             }
 
         estimate_advantage_args = {
@@ -84,6 +85,8 @@ def main():
     parser.add_argument('--save_params', action='store_true')
     parser.add_argument('--action_noise_std', type=float, default=0)
 
+    parser.add_argument('--dir', type=str, default='.')
+    parser.add_argument('--mlp_iter', type=int, default=1)
     args = parser.parse_args()
 
     # convert to dictionary
@@ -100,7 +103,7 @@ def main():
 
     logdir_prefix = 'q2_pg_'  # keep for autograder
 
-    data_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../data')
+    data_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'gdrive/MyDrive/data/' + args.dir)
 
     if not (os.path.exists(data_path)):
         os.makedirs(data_path)
