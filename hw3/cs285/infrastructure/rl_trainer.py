@@ -289,192 +289,164 @@ class RL_Trainer(object):
 
     ####################################
     ####################################
-
-    def collect_training_trajectories(self, itr, initial_expertdata, collect_policy, num_transitions_to_sample, save_expert_data_to_disk=False):
+def collect_training_trajectories(
+            self,
+            itr,
+            load_initial_expertdata,
+            collect_policy,
+            batch_size,
+    ):
         """
         :param itr:
         :param load_initial_expertdata:  path to expert data pkl file
         :param collect_policy:  the current policy using which we collect data
-        :param num_transitions_to_sample:  the number of transitions we collect
+        :param batch_size:  the number of transitions we collect
         :return:
             paths: a list trajectories
             envsteps_this_batch: the sum over the numbers of environment steps in paths
             train_video_paths: paths which also contain videos for visualization purposes
         """
+
         # TODO: get this from hw1 or hw2
+
+        if itr == 0 and load_initial_expertdata is not None:
+            with open(load_initial_expertdata, 'rb') as paths_file:
+                
+                loaded_paths = pickle.load(paths_file)
+            return loaded_paths, 0, None
+
+        print("\nCollecting data to be used for training...")
+        paths, envsteps_this_batch = utils.sample_trajectories(
+                self.env,
+                collect_policy,
+                batch_size,
+                self.params['ep_len'],
+            )
+        
+
+        # collect more rollouts with the same policy, to be saved as videos in tensorboard
+        # note: here, we collect MAX_NVIDEO rollouts, each of length MAX_VIDEO_LEN
+        train_video_paths = None
+        if self.logvideo:
+            print('\nCollecting train rollouts to be used for saving videos...')
+            train_video_paths = utils.sample_n_trajectories(self.env, collect_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
 
         return paths, envsteps_this_batch, train_video_paths
 
-    def train_agent(self):
-        # TODO: get this from hw1 or hw2
 
-    ####################################
-    ####################################
-    def perform_dqn_logging(self, all_logs):
-        last_log = all_logs[-1]
+def train_agent(self):
 
-        episode_rewards = self.env.get_episode_rewards()
-        if len(episode_rewards) > 0:
-            self.mean_episode_reward = np.mean(episode_rewards[-100:])
-        if len(episode_rewards) > 100:
-            self.best_mean_episode_reward = max(self.best_mean_episode_reward, self.mean_episode_reward)
+    # TODO: get this from hw1 or hw2
+    
+    # print('\nTraining agent using sampled data from replay buffer...')
+    all_logs = []
+    for train_step in range(self.params['num_agent_train_steps_per_iter']):
 
+        ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch = self.agent.sample(self.params['train_batch_size'])
+
+        train_log = self.agent.train(ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch)
+        all_logs.append(train_log)
+    return all_logs
+
+####################################
+####################################
+def perform_dqn_logging(self, all_logs):
+    last_log = all_logs[-1]
+
+    episode_rewards = self.env.get_episode_rewards()
+    if len(episode_rewards) > 0:
+        self.mean_episode_reward = np.mean(episode_rewards[-100:])
+    if len(episode_rewards) > 100:
+        self.best_mean_episode_reward = max(self.best_mean_episode_reward, self.mean_episode_reward)
+
+    logs = OrderedDict()
+
+    logs["Train_EnvstepsSoFar"] = self.agent.t
+    print("Timestep %d" % (self.agent.t,))
+    if self.mean_episode_reward > -5000:
+        logs["Train_AverageReturn"] = np.mean(self.mean_episode_reward)
+    print("mean reward (100 episodes) %f" % self.mean_episode_reward)
+    if self.best_mean_episode_reward > -5000:
+        logs["Train_BestReturn"] = np.mean(self.best_mean_episode_reward)
+    print("best mean reward %f" % self.best_mean_episode_reward)
+
+    if self.start_time is not None:
+        time_since_start = (time.time() - self.start_time)
+        print("running time %f" % time_since_start)
+        logs["TimeSinceStart"] = time_since_start
+
+    logs.update(last_log)
+
+    sys.stdout.flush()
+
+    for key, value in logs.items():
+        print('{} : {}'.format(key, value))
+        self.logger.log_scalar(value, key, self.agent.t)
+    print('Done logging...\n\n')
+
+    self.logger.flush()
+
+
+def perform_logging(self, itr, paths, eval_policy, train_video_paths, all_logs):
+
+    last_log = all_logs[-1]
+
+    #######################
+
+    # collect eval trajectories, for logging
+    print("\nCollecting data for eval...")
+    eval_paths, eval_envsteps_this_batch = utils.sample_trajectories(self.env, eval_policy, self.params['eval_batch_size'], self.params['ep_len'])
+
+    # save eval rollouts as videos in tensorboard event file
+    if self.logvideo and train_video_paths != None:
+        print('\nCollecting video rollouts eval')
+        eval_video_paths = utils.sample_n_trajectories(self.env, eval_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
+
+        #save train/eval videos
+        print('\nSaving train rollouts as videos...')
+        self.logger.log_paths_as_videos(train_video_paths, itr, fps=self.fps, max_videos_to_save=MAX_NVIDEO,
+                                        video_title='train_rollouts')
+        self.logger.log_paths_as_videos(eval_video_paths, itr, fps=self.fps,max_videos_to_save=MAX_NVIDEO,
+                                            video_title='eval_rollouts')
+
+    #######################
+
+    # save eval metrics
+    if self.logmetrics:
+        # returns, for logging
+        train_returns = [path["reward"].sum() for path in paths]
+        eval_returns = [eval_path["reward"].sum() for eval_path in eval_paths]
+
+        # episode lengths, for logging
+        train_ep_lens = [len(path["reward"]) for path in paths]
+        eval_ep_lens = [len(eval_path["reward"]) for eval_path in eval_paths]
+
+        # decide what to log
         logs = OrderedDict()
+        logs["Eval_AverageReturn"] = np.mean(eval_returns)
+        logs["Eval_StdReturn"] = np.std(eval_returns)
+        logs["Eval_MaxReturn"] = np.max(eval_returns)
+        logs["Eval_MinReturn"] = np.min(eval_returns)
+        logs["Eval_AverageEpLen"] = np.mean(eval_ep_lens)
 
-        logs["Train_EnvstepsSoFar"] = self.agent.t
-        print("Timestep %d" % (self.agent.t,))
-        if self.mean_episode_reward > -5000:
-            logs["Train_AverageReturn"] = np.mean(self.mean_episode_reward)
-        print("mean reward (100 episodes) %f" % self.mean_episode_reward)
-        if self.best_mean_episode_reward > -5000:
-            logs["Train_BestReturn"] = np.mean(self.best_mean_episode_reward)
-        print("best mean reward %f" % self.best_mean_episode_reward)
+        logs["Train_AverageReturn"] = np.mean(train_returns)
+        logs["Train_StdReturn"] = np.std(train_returns)
+        logs["Train_MaxReturn"] = np.max(train_returns)
+        logs["Train_MinReturn"] = np.min(train_returns)
+        logs["Train_AverageEpLen"] = np.mean(train_ep_lens)
 
-        if self.start_time is not None:
-            time_since_start = (time.time() - self.start_time)
-            print("running time %f" % time_since_start)
-            logs["TimeSinceStart"] = time_since_start
-
+        logs["Train_EnvstepsSoFar"] = self.total_envsteps
+        logs["TimeSinceStart"] = time.time() - self.start_time
         logs.update(last_log)
 
-        sys.stdout.flush()
+        if itr == 0:
+            self.initial_return = np.mean(train_returns)
+        logs["Initial_DataCollection_AverageReturn"] = self.initial_return
 
+        # perform the logging
         for key, value in logs.items():
             print('{} : {}'.format(key, value))
-            self.logger.log_scalar(value, key, self.agent.t)
+            self.logger.log_scalar(value, key, itr)
         print('Done logging...\n\n')
 
         self.logger.flush()
-
-    def perform_logging(self, itr, paths, eval_policy, train_video_paths, all_logs):
-
-        last_log = all_logs[-1]
-
-        #######################
-
-        # collect eval trajectories, for logging
-        print("\nCollecting data for eval...")
-        eval_paths, eval_envsteps_this_batch = utils.sample_trajectories(self.env, eval_policy, self.params['eval_batch_size'], self.params['ep_len'])
-
-        # save eval rollouts as videos in tensorboard event file
-        if self.logvideo and train_video_paths != None:
-            print('\nCollecting video rollouts eval')
-            eval_video_paths = utils.sample_n_trajectories(self.env, eval_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
-
-            #save train/eval videos
-            print('\nSaving train rollouts as videos...')
-            self.logger.log_paths_as_videos(train_video_paths, itr, fps=self.fps, max_videos_to_save=MAX_NVIDEO,
-                                            video_title='train_rollouts')
-            self.logger.log_paths_as_videos(eval_video_paths, itr, fps=self.fps,max_videos_to_save=MAX_NVIDEO,
-                                             video_title='eval_rollouts')
-
-        #######################
-
-        # save eval metrics
-        if self.logmetrics:
-            # returns, for logging
-            train_returns = [path["reward"].sum() for path in paths]
-            eval_returns = [eval_path["reward"].sum() for eval_path in eval_paths]
-
-            # episode lengths, for logging
-            train_ep_lens = [len(path["reward"]) for path in paths]
-            eval_ep_lens = [len(eval_path["reward"]) for eval_path in eval_paths]
-
-            # decide what to log
-            logs = OrderedDict()
-            logs["Eval_AverageReturn"] = np.mean(eval_returns)
-            logs["Eval_StdReturn"] = np.std(eval_returns)
-            logs["Eval_MaxReturn"] = np.max(eval_returns)
-            logs["Eval_MinReturn"] = np.min(eval_returns)
-            logs["Eval_AverageEpLen"] = np.mean(eval_ep_lens)
-
-            logs["Train_AverageReturn"] = np.mean(train_returns)
-            logs["Train_StdReturn"] = np.std(train_returns)
-            logs["Train_MaxReturn"] = np.max(train_returns)
-            logs["Train_MinReturn"] = np.min(train_returns)
-            logs["Train_AverageEpLen"] = np.mean(train_ep_lens)
-
-            logs["Train_EnvstepsSoFar"] = self.total_envsteps
-            logs["TimeSinceStart"] = time.time() - self.start_time
-            logs.update(last_log)
-
-            if itr == 0:
-                self.initial_return = np.mean(train_returns)
-            logs["Initial_DataCollection_AverageReturn"] = self.initial_return
-
-            # perform the logging
-            for key, value in logs.items():
-                print('{} : {}'.format(key, value))
-                self.logger.log_scalar(value, key, itr)
-            print('Done logging...\n\n')
-
-            self.logger.flush()
-
-
-    ####################################
-    ####################################
-
-    def perform_sac_logging(self, itr, stats, eval_policy, train_video_paths, all_logs):
-
-        last_log = all_logs[-1]
-
-        #######################
-
-        # collect eval trajectories, for logging
-        print("\nCollecting data for eval...")
-        eval_paths, eval_envsteps_this_batch = utils.eval_trajectories(self.env, eval_policy, self.params['eval_batch_size'], self.params['ep_len'])
-
-        # save eval rollouts as videos in tensorboard event file
-        if self.logvideo and train_video_paths != None:
-            print('\nCollecting video rollouts eval')
-            eval_video_paths = utils.sample_n_trajectories(self.env, eval_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
-
-            #save train/eval videos
-            print('\nSaving train rollouts as videos...')
-            self.logger.log_paths_as_videos(train_video_paths, itr, fps=self.fps, max_videos_to_save=MAX_NVIDEO,
-                                            video_title='train_rollouts')
-            self.logger.log_paths_as_videos(eval_video_paths, itr, fps=self.fps,max_videos_to_save=MAX_NVIDEO,
-                                             video_title='eval_rollouts')
-
-        #######################
-
-        # save eval metrics
-        if self.logmetrics:
-            # returns, for logging
-            eval_returns = [eval_path["reward"].sum() for eval_path in eval_paths]
-
-            # episode lengths, for logging
-            eval_ep_lens = [len(eval_path["reward"]) for eval_path in eval_paths]
-
-            # decide what to log
-            logs = OrderedDict()
-            logs["Eval_AverageReturn"] = np.mean(eval_returns)
-            logs["Eval_StdReturn"] = np.std(eval_returns)
-            logs["Eval_MaxReturn"] = np.max(eval_returns)
-            logs["Eval_MinReturn"] = np.min(eval_returns)
-            logs["Eval_AverageEpLen"] = np.mean(eval_ep_lens)
-
-            logs["Train_AverageReturn"] = np.mean(stats['reward'])
-            logs["Train_StdReturn"] = np.std(stats['reward'])
-            logs["Train_MaxReturn"] = np.max(stats['reward'])
-            logs["Train_MinReturn"] = np.min(stats['reward'])
-            logs["Train_AverageEpLen"] = np.mean(stats['ep_len'])
-
-            logs["Train_EnvstepsSoFar"] = self.total_envsteps
-            logs["TimeSinceStart"] = time.time() - self.start_time
-            logs.update(last_log)
-
-            if itr == 0:
-                self.initial_return = np.mean(stats['reward'])
-            logs["Initial_DataCollection_AverageReturn"] = self.initial_return
-
-            # perform the logging
-            for key, value in logs.items():
-                print('{} : {}'.format(key, value))
-                try:
-                    self.logger.log_scalar(value, key, itr)
-                except:
-                    pdb.set_trace()
-            print('Done logging...\n\n')
-
-            self.logger.flush()

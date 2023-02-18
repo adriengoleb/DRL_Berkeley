@@ -8,14 +8,12 @@ from cs285.infrastructure import pytorch_util as ptu
 class BootstrappedContinuousCritic(nn.Module, BaseCritic):
     """
         Notes on notation:
-
         Prefixes and suffixes:
         ob - observation
         ac - action
         _no - this tensor should have shape (batch self.size /n/, observation dim)
         _na - this tensor should have shape (batch self.size /n/, action dim)
         _n  - this tensor should have shape (batch self.size /n/)
-
         Note: batch self.size /n/ is defined at runtime.
         is None
     """
@@ -56,19 +54,17 @@ class BootstrappedContinuousCritic(nn.Module, BaseCritic):
     def update(self, ob_no, ac_na, next_ob_no, reward_n, terminal_n):
         """
             Update the parameters of the critic.
-
             let sum_of_path_lengths be the sum of the lengths of the paths sampled from
                 Agent.sample_trajectories
             let num_paths be the number of paths sampled from Agent.sample_trajectories
-
             arguments:
                 ob_no: shape: (sum_of_path_lengths, ob_dim)
+                ac_na: length: sum_of_path_lengths. The action taken at the current step.
                 next_ob_no: shape: (sum_of_path_lengths, ob_dim). The observation after taking one step forward
                 reward_n: length: sum_of_path_lengths. Each element in reward_n is a scalar containing
                     the reward for each timestep
                 terminal_n: length: sum_of_path_lengths. Each element in terminal_n is either 1 if the episode ended
                     at that timestep of 0 if the episode did not end
-
             returns:
                 training loss
         """
@@ -85,5 +81,22 @@ class BootstrappedContinuousCritic(nn.Module, BaseCritic):
         #       to 0) when a terminal state is reached
         # HINT: make sure to squeeze the output of the critic_network to ensure
         #       that its dimensions match the reward
+        
+        ob_no = ptu.from_numpy(ob_no)
+        next_ob_no = ptu.from_numpy(next_ob_no)
+        reward_n = ptu.from_numpy(reward_n)
+        terminal_n = ptu.from_numpy(terminal_n).bool()
+
+        for i in range(self.num_target_updates):
+            values_sprime = self(next_ob_no)
+            values_sprime[terminal_n] = 0
+            targets = (reward_n + self.gamma * values_sprime).detach()
+
+            for i in range(self.num_grad_steps_per_target_update):
+                self.optimizer.zero_grad()
+                values_s = self(ob_no)
+                loss = self.loss(values_s, targets)
+                loss.backward()
+                self.optimizer.step()
 
         return loss.item()
